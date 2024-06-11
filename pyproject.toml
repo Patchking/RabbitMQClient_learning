@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "rabbitmq-testclient"
+version = "0.1.0"
+description = "A small server for working with rabbitmq"
+authors = ["Ohaggard <marlausor@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+aio-pika = "^9.4.1"
+
+
+[tool.poetry.group.dev.dependencies]
+setuptools = "^70.0.0"
+flake8 = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
