@@ -12,9 +12,9 @@ class Sender:
     def __init__(
         self, queue_name: str, conn: aio_pika.RobustChannel, app_name: str = "sender.py"
     ):
-        self._queue_name = queue_name
-        self._conn = conn
-        self._app_name = app_name
+        self._queue_name: str = queue_name
+        self._conn: aio_pika.RobustChannel = conn
+        self._app_name: str = app_name
         self._channel: aio_pika.abc.AbstractChannel = None
 
     async def _connect_to_channel(self):
@@ -50,11 +50,11 @@ class Reciever:
         conn: aio_pika.RobustChannel,
         app_name: str = "reciever.py",
     ):
-        self._queue_name = queue_name
-        self._conn = conn
-        self._app_name = app_name
-        self._channel = None
-        self._queue = None
+        self._queue_name: str = queue_name
+        self._conn: aio_pika.RobustChannel = conn
+        self._app_name: str = app_name
+        self._channel: aio_pika.abc.AbstractChannel = None
+        self._queue: aio_pika.abc.AbstractQueue = None
 
     async def get_message_queue(self):
         return self._queue
@@ -63,8 +63,8 @@ class Reciever:
         self, callback: Callable[[aio_pika.abc.AbstractIncomingMessage], Awaitable[Any]]
     ):
         if self._queue is None:
-            self._channel: aio_pika.abc.AbstractChannel = await self._conn.channel()
-            self._queue: aio_pika.abc.AbstractQueue = await self._channel.declare_queue(
+            self._channel = await self._conn.channel()
+            self._queue = await self._channel.declare_queue(
                 self._queue_name, durable=True
             )
         logger.info("Virtual connection created")
@@ -79,13 +79,13 @@ class RabbitMQClient:
         appname: str,
         dt: float,
         init_func: Callable[[Any], None] = None,
-        process_func: Callable[[Any], None] = None,
+        process_func: Callable[[Any], None] = None
     ):
 
-        self._host = host
-        self._port = port
-        self._appname = appname
-        self._dt = dt
+        self._host: str = host
+        self._port: int = port
+        self._appname: str = appname
+        self._dt: float = dt
         self._connection = None
         self._init_function: Callable[[RabbitMQClient], None] = init_func
         self._proccess_func: Callable[[RabbitMQClient], None] = process_func
@@ -98,6 +98,7 @@ class RabbitMQClient:
             self._connection = await aio_pika.connect_robust(
                 host=self._host, port=self._port
             )
+            self._exchange_name
         except aio_pika.exceptions.CONNECTION_EXCEPTIONS as e:
             logger.error(e.args[0])
             await asyncio.sleep(3)
