@@ -1,5 +1,5 @@
 from uuid import uuid4
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, Set
 import aio_pika
 import asyncio
 from collections.abc import Awaitable
@@ -10,12 +10,17 @@ from .settings import logger
 
 class Sender:
     def __init__(
-        self, queue_name: str, conn: aio_pika.RobustChannel, app_name: str = "sender.py"
+        self,
+        queue_name: str,
+        conn: aio_pika.RobustChannel,
+        app_name: str,
+        exchange: aio_pika.abc.AbstractExchange
     ):
         self._queue_name: str = queue_name
         self._conn: aio_pika.RobustChannel = conn
         self._app_name: str = app_name
         self._channel: aio_pika.abc.AbstractChannel = None
+        self._exchange = exchange
 
     async def _connect_to_channel(self):
         self._channel = await self._conn.channel()
@@ -48,13 +53,15 @@ class Reciever:
         self,
         queue_name: str,
         conn: aio_pika.RobustChannel,
-        app_name: str = "reciever.py",
+        app_name: str,
+        exchange: aio_pika.abc.AbstractExchange
     ):
         self._queue_name: str = queue_name
         self._conn: aio_pika.RobustChannel = conn
         self._app_name: str = app_name
         self._channel: aio_pika.abc.AbstractChannel = None
         self._queue: aio_pika.abc.AbstractQueue = None
+        self._exchange = exchange
 
     async def get_message_queue(self):
         return self._queue
@@ -78,6 +85,7 @@ class RabbitMQClient:
         port: int,
         appname: str,
         dt: float,
+        exchange_name: str,
         init_func: Callable[[Any], None] = None,
         process_func: Callable[[Any], None] = None
     ):
@@ -86,11 +94,14 @@ class RabbitMQClient:
         self._port: int = port
         self._appname: str = appname
         self._dt: float = dt
-        self._connection = None
+        self._exchange_name = exchange_name
+        self._connection: aio_pika.abc.AbstractRobustConnection = None
+        self._channel: aio_pika.abc.AbstractChannel = None
+        self._exchange: aio_pika.abc.AbstractExchange = None
         self._init_function: Callable[[RabbitMQClient], None] = init_func
         self._proccess_func: Callable[[RabbitMQClient], None] = process_func
-        self._incoming_connections: Dict[str, Reciever] = {}
-        self._outcoming_connections: Dict[str, Sender] = {}
+        self._incoming_connections: Dict[str, aio_pika.abc.AbstractQueue] = {}
+        self._declaired_queue_list: Set[str] = {}
         asyncio.run(self._start())
 
     async def _start(self):
@@ -98,7 +109,11 @@ class RabbitMQClient:
             self._connection = await aio_pika.connect_robust(
                 host=self._host, port=self._port
             )
-            self._exchange_name
+            self._channel = await self._connection.channel()
+            self._exchange = await self._channel.declare_exchange(
+                name=self._exchange_name,
+                type=aio_pika.exchange.ExchangeType.TOPIC
+            )
         except aio_pika.exceptions.CONNECTION_EXCEPTIONS as e:
             logger.error(e.args[0])
             await asyncio.sleep(3)
@@ -110,27 +125,28 @@ class RabbitMQClient:
                 await self._run()
 
     async def post(self, name: str, data: bytes):
-        if name not in self._outcoming_connections:
-            self._outcoming_connections[name] = Sender(
-                name, self._connection, self._appname
+        if name not in self._declaired_queue_list:
+            self._declaired_queue_list.add(
+                await self._channel.declare_queue(name, durable=True)
             )
-        await self._outcoming_connections[name].post(data)
+        await self._exchange.publish(
+            message=data,
+            routing_key=name
+        )
 
-    async def subcribe_to_queue(
-        self,
-        name: str,
+    async def subscribe_to_queue(
+        self, name: str,
         callback: Callable[[aio_pika.abc.AbstractIncomingMessage], Awaitable[Any]],
     ):
-        if name in self._outcoming_connections:
-            raise RabbitMQAdapterException(
-                f"Queue {name} assigned as sender queue. One queue can't be used for recieve and send message at the same time."
-            )
-        if name in self._incoming_connections:
-            raise RabbitMQAdapterException(f"{name} already subcribed to queue.")
-        self._incoming_connections[name] = Reciever(
-            name, self._connection, self._appname
-        )
-        await self._incoming_connections[name].subcribe_to_queue(callback)
+        if name not in self._declaired_queue_list:
+            queue_to_add = await self._channel.declare_queue(name, durable=True)
+            if not await queue_to_add.bind(self._exchange):
+                raise RabbitMQAdapterException("Queue bind raised error")
+            self._declaired_queue_list.add(queue_to_add)
+            self._incoming_connections[name] = queue_to_add
+        # if name in self._incoming_connections:
+        #     raise RabbitMQAdapterException(f"{name} already subcribed to queue.")
+        self._incoming_connections[name].consume(callback=callback)
 
     async def _run(self):
         while True:
