@@ -3,6 +3,7 @@ from typing import Callable, Dict, Any, Set
 import aio_pika
 import asyncio
 from collections.abc import Awaitable
+from functools import partial
 
 from .exceptions import RabbitMQAdapterException
 from .settings import logger
@@ -146,7 +147,8 @@ class RabbitMQClient:
 
     async def subscribe_to_queue(
         self, name: str,
-        callback: Callable[[aio_pika.abc.AbstractIncomingMessage], Awaitable[Any]],
+        callback: Callable[[any, aio_pika.abc.AbstractIncomingMessage], Awaitable[Any]],
+        auto_clear: bool = False
     ):
         if name not in self._declaired_queue_list:
             queue_to_add = await self._channel.declare_queue(name, durable=True)
@@ -154,7 +156,7 @@ class RabbitMQClient:
                 raise RabbitMQAdapterException("Queue bind raised error")
             self._declaired_queue_list.add(queue_to_add)
             self._incoming_connections[name] = queue_to_add
-        await self._incoming_connections[name].consume(callback=callback)
+        await self._incoming_connections[name].consume(callback=partial(callback, self), no_ack=auto_clear)
 
     async def _run(self):
         while True:
