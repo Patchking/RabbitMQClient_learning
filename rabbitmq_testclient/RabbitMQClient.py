@@ -114,15 +114,17 @@ class RabbitMQClient:
                 name=self._exchange_name,
                 type=aio_pika.exchange.ExchangeType.TOPIC
             )
-        except aio_pika.exceptions.CONNECTION_EXCEPTIONS as e:
-            logger.error(e.args[0])
-            await asyncio.sleep(3)
-            return
-        async with self._connection:
             if self._init_function:
                 await self._init_function(self)
             while True:
                 await self._run()
+        except aio_pika.exceptions.CONNECTION_EXCEPTIONS as e:
+            logger.error(e.args[0])
+            await asyncio.sleep(3)
+            return
+        finally:
+            if self._connection:
+                self._connection.close()
 
     async def post(self, name: str, data: bytes):
         if name not in self._declaired_queue_list:
@@ -144,8 +146,6 @@ class RabbitMQClient:
                 raise RabbitMQAdapterException("Queue bind raised error")
             self._declaired_queue_list.add(queue_to_add)
             self._incoming_connections[name] = queue_to_add
-        # if name in self._incoming_connections:
-        #     raise RabbitMQAdapterException(f"{name} already subcribed to queue.")
         self._incoming_connections[name].consume(callback=callback)
 
     async def _run(self):
@@ -153,6 +153,3 @@ class RabbitMQClient:
             if self._proccess_func:
                 await self._proccess_func(self)
             await asyncio.sleep(self._dt)
-
-    def __del__(self):
-        self._connection.close()
