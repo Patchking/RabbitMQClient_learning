@@ -127,12 +127,20 @@ class RabbitMQClient:
                 self._connection.close()
 
     async def post(self, name: str, data: bytes):
+        post_message = aio_pika.Message(
+            body=data,
+            content_type="application/json",
+            content_encoding="utf-8",
+            message_id=uuid4().hex,
+            delivery_mode=aio_pika.abc.DeliveryMode.PERSISTENT,
+            app_id=self._appname
+        )
         if name not in self._declaired_queue_list:
             self._declaired_queue_list.add(
                 await self._channel.declare_queue(name, durable=True)
             )
         await self._exchange.publish(
-            message=data,
+            message=post_message,
             routing_key=name
         )
 
@@ -146,7 +154,7 @@ class RabbitMQClient:
                 raise RabbitMQAdapterException("Queue bind raised error")
             self._declaired_queue_list.add(queue_to_add)
             self._incoming_connections[name] = queue_to_add
-        self._incoming_connections[name].consume(callback=callback)
+        await self._incoming_connections[name].consume(callback=callback)
 
     async def _run(self):
         while True:
