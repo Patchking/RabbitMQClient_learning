@@ -3,80 +3,9 @@ from typing import Callable, Dict, Any, Set
 import aio_pika
 import asyncio
 from collections.abc import Awaitable
-from functools import partial
 
 from .exceptions import RabbitMQAdapterException
 from .settings import logger
-
-
-# class Sender:
-#     def __init__(
-#         self,
-#         queue_name: str,
-#         conn: aio_pika.RobustChannel,
-#         app_name: str,
-#         exchange: aio_pika.abc.AbstractExchange
-#     ):
-#         self._queue_name: str = queue_name
-#         self._conn: aio_pika.RobustChannel = conn
-#         self._app_name: str = app_name
-#         self._channel: aio_pika.abc.AbstractChannel = None
-#         self._exchange = exchange
-
-#     async def _connect_to_channel(self):
-#         self._channel = await self._conn.channel()
-#         logger.info("Virtual connection created")
-
-#     async def post(self, data: bytes):
-#         if not self._channel:
-#             await self._connect_to_channel()
-#         message = self._create_message(data)
-#         logger.info("message is publishing")
-#         await self._channel.default_exchange.publish(
-#             message,
-#             routing_key=self._queue_name,
-#         )
-#         logger.info("message successfully published")
-
-#     def _create_message(self, data: bytes) -> aio_pika.Message:
-#         return aio_pika.Message(
-#             body=data,
-#             content_type="application/json",
-#             content_encoding="utf-8",
-#             message_id=uuid4().hex,
-#             delivery_mode=aio_pika.abc.DeliveryMode.PERSISTENT,
-#             app_id=self._app_name,
-#         )
-
-
-# class Reciever:
-#     def __init__(
-#         self,
-#         queue_name: str,
-#         conn: aio_pika.RobustChannel,
-#         app_name: str,
-#         exchange: aio_pika.abc.AbstractExchange
-#     ):
-#         self._queue_name: str = queue_name
-#         self._conn: aio_pika.RobustChannel = conn
-#         self._app_name: str = app_name
-#         self._channel: aio_pika.abc.AbstractChannel = None
-#         self._queue: aio_pika.abc.AbstractQueue = None
-#         self._exchange = exchange
-
-#     async def get_message_queue(self):
-#         return self._queue
-
-#     async def subcribe_to_queue(
-#         self, callback: Callable[[aio_pika.abc.AbstractIncomingMessage], Awaitable[Any]]
-#     ):
-#         if self._queue is None:
-#             self._channel = await self._conn.channel()
-#             self._queue = await self._channel.declare_queue(
-#                 self._queue_name, durable=True
-#             )
-#         logger.info("Virtual connection created")
-#         await self._queue.consume(callback)
 
 
 class RabbitMQClient:
@@ -103,7 +32,11 @@ class RabbitMQClient:
         self._proccess_func: Callable[[RabbitMQClient], None] = process_func
         self._incoming_connections: Dict[str, aio_pika.abc.AbstractQueue] = {}
         self._declaired_queue_list: Set[str] = set()
-        asyncio.run(self._start())
+        self._do_processing_message = asyncio.Lock()
+        try:
+            asyncio.run(self._start())
+        except KeyboardInterrupt:
+            logger.info("RabbitMQ Terminated")
 
     async def _start(self):
         try:
@@ -111,21 +44,21 @@ class RabbitMQClient:
                 host=self._host, port=self._port
             )
             self._channel = await self._connection.channel()
+            await self._channel.set_qos(1)
             self._exchange = await self._channel.declare_exchange(
                 name=self._exchange_name,
                 type=aio_pika.exchange.ExchangeType.TOPIC
             )
             if self._init_function:
                 await self._init_function(self)
-            while True:
-                await self._run()
+            await self._run()
         except aio_pika.exceptions.CONNECTION_EXCEPTIONS as e:
             logger.error(e.args[0])
             await asyncio.sleep(3)
             return
         finally:
             if self._connection:
-                self._connection.close()
+                await self._connection.close()
 
     async def post(self, name: str, data: bytes):
         post_message = aio_pika.Message(
@@ -137,9 +70,8 @@ class RabbitMQClient:
             app_id=self._appname
         )
         if name not in self._declaired_queue_list:
-            self._declaired_queue_list.add(
-                await self._channel.declare_queue(name, durable=True)
-            )
+            await self._channel.declare_queue(name, durable=True)
+            self._declaired_queue_list.add(name)
         await self._exchange.publish(
             message=post_message,
             routing_key=name
@@ -156,7 +88,12 @@ class RabbitMQClient:
                 raise RabbitMQAdapterException("Queue bind raised error")
             self._declaired_queue_list.add(queue_to_add)
             self._incoming_connections[name] = queue_to_add
-        await self._incoming_connections[name].consume(callback=partial(callback, self), no_ack=auto_clear)
+
+        async def wrapper(message: aio_pika.abc.AbstractMessage):
+            async with self._do_processing_message:
+                await callback(self, message)
+
+        await self._incoming_connections[name].consume(callback=wrapper, no_ack=auto_clear)
 
     async def _run(self):
         while True:
